@@ -195,14 +195,16 @@ class ArtistScraper(object):
         try:
             result = await self._user.async_get(query_url, self.client)
         except Exception as e:
-            print(f"EXCEPTION {exception_num+1}: {e}\n{query_url}.")
-            if exception_num >= 3:
+            exception_num += 1
+            print(f"EXCEPTION {exception_num}: {e}\n{query_url}.")
+            if exception_num >= 5:
                 switch_server_and_user(self, lock, scrape_num)
-                return await self.get_url_result_json(query_url, lock, scrape_num,
-                                                      exception_num+1)
+                return await self.get_url_result_json(query_url, lock,
+                                                      scrape_num)
             else:
                 time.sleep(.5)
-                return await self.get_url_result_json(query_url, lock, scrape_num)
+                return await self.get_url_result_json(query_url, lock,
+                                                      scrape_num, exception_num)
 
         if result.status_code == 200:
             return result.json()["artists"]
@@ -620,26 +622,27 @@ def switch_server_and_user(scraper, lock, scrape_num):
     """
     try:
         time.sleep(8)
-        with nonblocking(lock) as locked:
-            if locked:
-                try:
-                    os.system("'/mnt/c/Program Files/NordVPN/nordvpn.exe' -c")
-                    time.sleep(8)
-                    scrape_num.value += 1
-                    scraper.initialize_new_user(scrape_num.value)
-                    print('main lock succeeded')
-                except Exception as e:
-                    print("*** Primary sleeping failed:", e)
-                finally:
-                    lock.release()
-                    return
-
-        lock.acquire()
-        lock.release()
-        scraper.initialize_new_user(scrape_num.value)
-
+        if lock.acquire(blocking=False):
+            try:
+                os.system("'/mnt/c/Program Files/NordVPN/nordvpn.exe' -c")
+                time.sleep(8)
+                scrape_num.value += 1
+                scraper.initialize_new_user(scrape_num.value)
+                print('main lock succeeded')
+            except Exception as e:
+                print("*** Primary sleeping failed:", e)
+            finally:
+                lock.release()
+        else:
+            try:
+                lock.acquire()
+                lock.release()
+                scraper.initialize_new_user(scrape_num.value)
+            except:
+                print('*** Secondary locks failed', e)
     except Exception as e:
-        print('*** Secondary locks failed', e)
+        print('*** Initial locking in switching servers failed:', e)
+
 
 
 async def wait_for_rate_limit(result):
@@ -650,20 +653,20 @@ async def wait_for_rate_limit(result):
     # time.sleep(wait_time)
 
 
-@contextmanager
-def nonblocking(lock):
-    """
-    Allows nonblocking locks to work in a way that can avoid race conditions
+# @contextmanager
+# def nonblocking(lock):
+#     """
+#     Allows nonblocking locks to work in a way that can avoid race conditions
 
-    copied from stack overflow post:
-    https://stackoverflow.com/questions/31501487/non-blocking-lock-with-with-statement
-    """
-    locked = lock.acquire(blocking=False)
-    try:
-        yield lock
-    finally:
-        if locked:
-            lock.release()
+#     copied from stack overflow post:
+#     https://stackoverflow.com/questions/31501487/non-blocking-lock-with-with-statement
+#     """
+#     locked = lock.acquire(blocking=False)
+#     try:
+#         yield lock
+#     finally:
+#         if locked:
+#             lock.release()
 
 
 # %%
@@ -719,13 +722,14 @@ async def start_async(scraper, lock, write_lock, scrape_num, full_artists):
 
         full_artists.update(scraper.all_artists)
 
-        with nonblocking(write_lock) as locked:
-            if locked:
-                print("Writing full_artists for", scraper.start_chars)
-                with open("quick_results/full_artists.json", 'w') as out_file:
-                    json.dump(dict(full_artists), out_file)
-            else:
-                print("Skipping write for", {scraper.start_chars})
+        # with nonblocking(write_lock) as locked:
+        if write_lock.acquire(blocking=False):
+            print("Writing full_artists for", scraper.start_chars)
+            with open("quick_results/full_artists.json", 'w') as out_file:
+                json.dump(dict(full_artists), out_file)
+            print("Finished writing full_artists for", scraper.start_chars)
+        else:
+            print("Skipping write for", {scraper.start_chars})
 
         with open(scraper.chars_file, "a") as out_file:
             out_file.write(f"{scraper.start_chars}: {len(scraper.all_artists)}\n")
