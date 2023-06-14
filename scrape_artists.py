@@ -11,7 +11,6 @@ import string
 import asyncio
 import requests
 import itertools
-# import ujson as json
 import multiprocessing
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -320,8 +319,7 @@ class ArtistScraper(object):
                 if words[-2] < current_word + char:
                     next_chars.remove(char)
         return next_chars
-
-
+    
     def get_cleaned_punctuation(self, prior_string):
         """
         Prevents punctuation cycles and removes unuseful punctuation
