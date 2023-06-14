@@ -37,8 +37,7 @@ each user account you are using for this process. This can be done by creating
 an account in an incognito window, exiting the window without logging out,
 reopening the account in a new incognito window, and using the developer console
 to extract the SP_DC and SP_KEY strings; for more details look in the readme of
-[Spotifile](https://github.com/Michael-K-Stein/SpotiFile). For now, I have
-included 3 user accounts to use in your own testing.
+[Spotifile](https://github.com/Michael-K-Stein/SpotiFile).
 
 
 ## How to Run
