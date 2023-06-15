@@ -141,7 +141,6 @@ class ArtistScraper(object):
             print(prior_string)
 
         next_totals = {}
-        # next_chars = await self.get_cleaned_alphanumericals(prior_string)
         next_chars = self.get_cleaned_alphanumericals(prior_string)
 
         if (prior_string[-1] == " " and prior_string[0] in next_chars):
@@ -289,7 +288,6 @@ class ArtistScraper(object):
         """
         next_chars = self.ALPHANUMERICALS.copy()
         words = prior_string.split(" ")
-        # first_word_in_alphabetical = sorted(words)[0]
 
         if len(words) > 1:
             if prior_string[-1] == " ":
@@ -317,11 +315,10 @@ class ArtistScraper(object):
                     next_chars.remove(letter)
 
             for char in next_chars:
-                # if first_word_in_alphabetical < current_word + char:
                 if words[-2] < current_word + char:
                     next_chars.remove(char)
         return next_chars
-    
+
     def get_cleaned_punctuation(self, prior_string):
         """
         Prevents punctuation cycles and removes unuseful punctuation
@@ -354,7 +351,8 @@ class ArtistScraper(object):
             skip_chars.remove(".")
             skip_chars.remove("_")
             if ((space_count >= 6 and self.parse_type == "long")
-                    or (space_count >= 2 and self.parse_type == "quick")
+                    or (space_count >= 4 and self.parse_type == "quick")
+                    # or (space_count >= 2 and self.parse_type == "quick")
                     or (self.parse_type == "rapid") or prior_string[-2] == " "):
                 skip_chars.remove(" ")
 
@@ -621,26 +619,42 @@ def switch_server_and_user(scraper, lock, scrape_num):
     try:
         time.sleep(8)
         if lock.acquire(blocking=False):
+            print("Main lock acquired")
             try:
                 os.system("'/mnt/c/Program Files/NordVPN/nordvpn.exe' -c")
-                time.sleep(8)
+                fails = 0
+                while not check_connection():
+                    time.sleep(1)
+                    fails += 1
+                    if fails > 12:
+                        os.system("'/mnt/c/Program Files/NordVPN/nordvpn.exe' -c")
+                        fails = 0
+                print("New VPN connection established")
                 scrape_num.value += 1
                 scraper.initialize_new_user(scrape_num.value)
-                print('main lock succeeded')
+                print('Main lock released')
             except Exception as e:
                 print("*** Primary sleeping failed:", e)
             finally:
                 lock.release()
         else:
             try:
-                lock.acquire()
-                lock.release()
+                while not check_connection():
+                    time.sleep(1)
                 scraper.initialize_new_user(scrape_num.value)
-            except:
+                print("Secondary process has connnected")
+            except Exception as e:
                 print('*** Secondary locks failed', e)
     except Exception as e:
         print('*** Initial locking in switching servers failed:', e)
 
+
+def check_connection():
+    try:
+        requests.get('http://www.google.com', timeout=5)
+        return True
+    except requests.URLError as e:
+        return False
 
 
 async def wait_for_rate_limit(result):
@@ -649,22 +663,6 @@ async def wait_for_rate_limit(result):
     print(f"Rate limit exceeded. Please wait {wait_time} seconds.")
     await asyncio.sleep(wait_time)
     # time.sleep(wait_time)
-
-
-# @contextmanager
-# def nonblocking(lock):
-#     """
-#     Allows nonblocking locks to work in a way that can avoid race conditions
-
-#     copied from stack overflow post:
-#     https://stackoverflow.com/questions/31501487/non-blocking-lock-with-with-statement
-#     """
-#     locked = lock.acquire(blocking=False)
-#     try:
-#         yield lock
-#     finally:
-#         if locked:
-#             lock.release()
 
 
 # %%
