@@ -6,7 +6,6 @@ import json
 import time
 import httpx
 import base64
-import ctypes
 import string
 import asyncio
 import requests
@@ -15,7 +14,6 @@ import multiprocessing
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from collections import Counter
-from contextlib import contextmanager
 from concurrent.futures import ProcessPoolExecutor
 load_dotenv()
 
@@ -56,12 +54,13 @@ class ArtistScraper(object):
             allow for 3 word searches (default:quick, rapid, or long)
             update -- whether to search letters that have already been searched
             (default=false)
-            scrape_num -- which number sp cookies to start with (default=0)
+            self.scrape_num -- which number sp cookies to start with (default=0)
             num_users -- number of users' cookies in .env
             workers -- how many cpu cores to use
         """
         self.parse_type = parse_type
         self.update = update
+        self.scrape_num = scrape_num
         self.num_users = num_users
         self.workers = workers
 
@@ -72,11 +71,16 @@ class ArtistScraper(object):
         self.VALID_START_CHARS = self.VALID_CHARS[:-2]
         self.ALPHANUMERICALS = self.VALID_CHARS[:-3]
         self.PUNCTUATION = self.VALID_CHARS[-3:]
-        self.COMMON_LETTERS = list('etaoinshrdlcumwfgypbvkjxqz _.')
+        # self.COMMON_LETTERS = list('etaoinshrdlcumwfgypbvkjxqz _.')
+        self.MAIN_AND = "and"
+        self.SECONDARY_AND_WORDS = ["e", "en","et", "ja", "nd", "und", "y"]
+        self.RELEVANT_AND_WORDS = self.SECONDARY_AND_WORDS
+        # self.TWO_STRING_ANDS = ["et", "en", "ja", "nd"]
+        # self.THREE_STRING_ANDS = ["and", "und"]
         self.MAX_URL_LENGTH = 307
 
         self._setup_folders(parse_type)
-        self.initialize_new_user(scrape_num)
+        self.initialize_new_user()
         self.store_all_genres()
 
         self.client = None
@@ -84,7 +88,7 @@ class ArtistScraper(object):
         self.all_artists = {}
         self.done_chars = {}
 
-    async def get_query_results(self, cur_string, lock, scrape_num):
+    async def get_query_results(self, cur_string):
         """
         Calls current query, child queries, and maybe genre queries as needed
 
@@ -98,36 +102,36 @@ class ArtistScraper(object):
         """
         query = f"""https://api.spotify.com/v1/search?q=artist:"{
                     cur_string}"&type=artist&limit=50"""
-        result_json = await self.get_url_result_json(query, lock, scrape_num)
+        result_json = await self.get_url_result_json(query)
 
         total = result_json["total"]
         if total == 1000:
             children_sorted_by_amount, children_total = \
-                await self.add_chars_to_query(cur_string, lock, scrape_num)
+                await self.add_chars_to_query(cur_string)
             new_result_json = await self.get_url_result_json(
                 f"""https://api.spotify.com/v1/search?q=artist:"{cur_string}"{
                     self.create_not_string(children_sorted_by_amount,
-                                            len(query),cur_string)
-                    }&type=artist&limit=50""",
-                lock, scrape_num)
+                    len(query), cur_string)}&type=artist&limit=50""")
             pure_total = new_result_json["total"]
 
             if pure_total > 0:
-                await self.process_all_pages(result_json, lock, scrape_num)
+                await self.process_all_pages(result_json)
+                # print(f'"{cur_string}": {pure_total}')
                 if len(cur_string) <= 3:
                     print(f'"{cur_string}": {pure_total}')
             if pure_total == 1000 and self.parse_type == "long":
                 await self.get_query_with_genre_results(children_sorted_by_amount,
-                                                        cur_string, lock, scrape_num)
+                                                        cur_string)
             return total + children_total
 
         elif total > 0:
-            await self.process_all_pages(result_json, lock, scrape_num)
+            await self.process_all_pages(result_json)
+            # print(f'{cur_string}: {total}')
             if len(cur_string) <= 3:
                 print(f'{cur_string}: {total}')
         return total
 
-    async def add_chars_to_query(self, prior_string, lock, scrape_num):
+    async def add_chars_to_query(self, prior_string):
         """
         Calls for a search on each possible string containing the prior+1
 
@@ -136,40 +140,73 @@ class ArtistScraper(object):
         next characters by which ones result in the most artists for filtering
         the not queries. For space and period, we immediately skip a letter
         since these are meaningless at the end of a search string
+        -- merged with get_cleaned functions
         """
-        if len(prior_string) > 12:
+        if len(prior_string) > 16:
             print(prior_string)
 
-        next_totals = {}
-        next_chars = self.get_cleaned_alphanumericals(prior_string)
+        # next_totals = {}
+        next_chars = self.ALPHANUMERICALS.copy()
+        words = prior_string.split(" ")
+        cur_word = words[-1]
 
-        if (prior_string[-1] == " " and prior_string[0] in next_chars):
-            next_chars.remove(prior_string[0])
-            await self.add_chars_to_query(prior_string + prior_string[0],
-                                          lock, scrape_num)
+
+        if len(words) > 1:
+            prev_word = words[-2]
+            next_chars = [char for char in next_chars
+                            if prev_word >= cur_word + char]
+            # Debating which of the two ifs below
+            # if prior_string[-1] == " ":
+            #     next_chars.remove(prev_word[0])
+            if prior_string[-1] == " ":
+                next_chars.remove(prev_word[0])
+                self.add_chars_to_query(prior_string + prev_word[0])
+            # Debating the if below
+            elif prior_string[-2] == " ":
+                next_chars.remove(prev_word[1])
+            # Debating how much duplication to allow
+
+            if (len(cur_word)
+                    and (
+                        (len(words) <= 3 and self.parse_type == "quick")
+                        or (len(words) <= 6 and self.parse_type == "long")
+                        or (self.parse_type == "rapid"))
+                    # Debating below
+                    # and cur_word not in self.RELEVANT_AND_WORDS
+                    ):
+                await self.add_chars_to_query(prior_string + " ")
+                # Debating below
+                # if len(prev_word) > 1:
+                #     await self.get_query_results(prior_string + " " + cur_word)
+
+        elif "." not in prior_string and "_" not in prior_string:
+            await self.add_chars_to_query(prior_string + ".")
+            await self.get_query_results(prior_string + "_")
+            await self.add_chars_to_query(prior_string + " ")
+            # Debating below
+            # await self.get_query_results(prior_string + " " + prior_string)
+        elif (prior_string[-1] == "."):
+            next_chars = filter(lambda i: i not in string.digits, next_chars)
+
+        next_totals = {}
         for char in next_chars:
             next_totals[char] = await self.get_query_results(
-                                        prior_string + char, lock, scrape_num)
+                                        prior_string + char)
+            # Debating below
+            # if cur_word + char in self.RELEVANT_AND_WORDS:
+            #     await self.add_chars_to_query(prior_string + char)
+            # else:
+            #     next_totals[char] = await self.get_query_results(
+            #                             prior_string + char)
 
         children_sorted_by_amount = sorted(next_totals.keys(),
                                            key=lambda x: next_totals[x],
                                            reverse=True)
 
-        if prior_string[-1] not in self.PUNCTUATION:
-            skip_chars = self.get_cleaned_punctuation(prior_string)
-            for char in skip_chars:
-                if char == "_":
-                    await self.get_query_results(prior_string + char,
-                                                 lock, scrape_num)
-                else:
-                    await self.add_chars_to_query(
-                    prior_string + char, lock, scrape_num)
-
         return children_sorted_by_amount, sum(next_totals.values())
 
-
     async def get_query_with_genre_results(self, children_sorted_by_amount,
-                                           cur_string, lock, scrape_num):
+                                           cur_string):
         """
         Searches through each genre for artists w/ the current string
 
@@ -184,10 +221,10 @@ class ArtistScraper(object):
                 f"""https://api.spotify.com/v1/search?q=genre:"{genre}"artist:"{
                     cur_string}"{self.create_not_string(children_sorted_by_amount,
                                                         prior_length, cur_string)
-                    }&type=artist&limit=50""", lock, scrape_num)
-            await self.process_all_pages(result_json, lock, scrape_num)
+                                }&type=artist&limit=50""")
+            await self.process_all_pages(result_json)
 
-    async def get_url_result_json(self, query_url, lock, scrape_num,
+    async def get_url_result_json(self, query_url,
                                             exception_num=0):
         """Sends POST to Spotify, extracts info, & handles errors & servers """
         try:
@@ -196,37 +233,35 @@ class ArtistScraper(object):
             exception_num += 1
             print(f"EXCEPTION {exception_num}: {e}\n{query_url}.")
             if exception_num >= 5:
-                switch_server_and_user(self, lock, scrape_num)
-                return await self.get_url_result_json(query_url, lock,
-                                                      scrape_num)
+                switch_server_and_user(self)
+                return await self.get_url_result_json(query_url)
             else:
                 time.sleep(.5)
-                return await self.get_url_result_json(query_url, lock,
-                                                      scrape_num, exception_num)
+                return await self.get_url_result_json(query_url, exception_num)
 
         if result.status_code == 200:
             return result.json()["artists"]
         elif result.status_code == 401:
             print(f"ERROR {result.status_code}: DNS Error - Switching VPN")
-            switch_server_and_user(self, lock, scrape_num)
-            return await self.get_url_result_json(query_url, lock, scrape_num)
+            switch_server_and_user(self)
+            return await self.get_url_result_json(query_url)
 
         # Shouldn't occur in this implementation since doesn't use Spotify API
         elif (result.status_code == 429):
             print(f"ERROR {result.status_code}: Passed rate limit")
-            await wait_for_rate_limit(result)
-            return await self.get_url_result_json(query_url, lock, scrape_num)
+            wait_for_rate_limit(result)
+            return await self.get_url_result_json(query_url)
         else:
             print(f"ERROR {result.status_code}: Other error occurred")
             time.sleep(.5)
-            return await self.get_url_result_json(query_url, lock, scrape_num)
+            return await self.get_url_result_json(query_url)
 
-    async def process_all_pages(self, result_json, lock, scrape_num):
+    async def process_all_pages(self, result_json):
         """Extracts artists from every pages of results for the given query"""
         self.update_artists(result_json)
         while (result_json['next']):
             result_json = await self.get_url_result_json(
-                result_json["next"], lock, scrape_num)
+                result_json["next"])
             self.update_artists(result_json)
 
     def create_not_string(self, children_sorted_by_amount,
@@ -249,115 +284,6 @@ class ArtistScraper(object):
             not_string += f''' NOT artist:"{cur_string + char}"'''
         return not_string
 
-    def get_cleaned_alphanumericals(self, prior_string):
-        """
-        Prevents repeating chars and unnecessary search letters & numbers
-
-        The first if prevents having a one-letter word where its first letter is
-        immediately repeated in the next word making the first word irrelevant
-        and repeating the same search.
-        Second if prevents starting a word with the same letter as the first
-        word so it just removes this letter and searches the skip of this letter.
-        Third, if prevents having two words with the same starting two
-        letters repeating the same letter twice in a row.
-        """
-        next_chars = self.ALPHANUMERICALS.copy()
-        words = prior_string.split(" ")
-        if (len(prior_string) == 2 and prior_string[1] == " "
-                and prior_string[0] in next_chars):
-            next_chars.remove(prior_string[0])
-        elif (prior_string[-1] == "."):
-            next_chars = filter(lambda i: i not in string.digits, next_chars)
-        if len(words) > 1:
-            next_chars = [char for char in next_chars
-                            if words[-2] >= words[-1] + char]
-            if (prior_string[-2] == " "):
-                for word in words[:-1]:
-                    if (len(word) >= 2 and prior_string[-1] == word[0]
-                        and word[1] in next_chars):
-                        next_chars.remove(word[1])
-        return next_chars
-
-    async def get_cleaned_words(self, prior_string):
-        """
-        TODO: Create more comprehensive word-based quering system that better
-        searches through different word combinations and skips over duplicated
-        word combos by only allowing alphabetical combinations (as Spotify
-        defines words w/out location) - not production ready yet but added some
-        techniques like the alphabetic sorting to the method above temprarily
-        """
-        next_chars = self.ALPHANUMERICALS.copy()
-        words = prior_string.split(" ")
-
-        if len(words) > 1:
-            if prior_string[-1] == " ":
-                for word in words:
-                    if len(word) == 1 and word[0] in next_chars:
-                        next_chars.remove(word[0])
-                words = words[:-1]
-
-            current_word = words[-1]
-
-            for word in words[:-1]:
-                if (len(word) > len(current_word)
-                        and word[:len(current_word)] == current_word
-                        and word[len(current_word)] in next_chars):
-                    next_chars.remove(word[len(current_word)])
-                    if len(current_word) == 1:
-                        await self.add_chars_to_query(prior_string +
-                                                    word[len(current_word)],
-                                                        lock, scrape_num)
-
-            first_letters = [key for (key, val) in
-                        Counter([word[0] for word in words]).items() if val > 1]
-            for letter in first_letters:
-                if letter in next_chars:
-                    next_chars.remove(letter)
-
-            for char in next_chars:
-                if words[-2] < current_word + char:
-                    next_chars.remove(char)
-        return next_chars
-
-    def get_cleaned_punctuation(self, prior_string):
-        """
-        Prevents punctuation cycles and removes unuseful punctuation
-
-        Based upon my experimentation, underscore, period, and space are the
-        only punctuation that result in unique combinations when used as search
-        terms. However, period and space only work if not at start of word. "/"
-        and probably "|" also work as search terms but result in separating the
-        start of two different words which isn't necessary for this method.
-        Also, none of the punctuation can end a search query so we immediate go
-        to next character in these situations.
-        Through experimentation and basic logic, I found out that there won't be
-        unique strings that have two unique punctuationsthat
-        wouldn't already be reflected in the results of having one of those
-        punctuation. This also means that an additional word won't help us
-        isolate punctuation already found.
-        Furthermore, the utility of spaces remains slightly even after 2 spaces
-        (eg bhai ji singh > 100) but the spaces multiply the computation time
-        for only a few extra artists provided so we only explore a large subset
-        of spaces when doing a long search as these artists would almost always
-        already be predicted by one or two words.
-        """
-        skip_chars = self.PUNCTUATION.copy()
-        space_count = prior_string.count(" ")
-        if "." in prior_string or "_" in prior_string:
-            skip_chars.remove(" ")
-            skip_chars.remove(".")
-            skip_chars.remove("_")
-        elif space_count >= 1:
-            skip_chars.remove(".")
-            skip_chars.remove("_")
-            if ((space_count >= 6 and self.parse_type == "long")
-                    or (space_count >= 4 and self.parse_type == "quick")
-                    # or (space_count >= 2 and self.parse_type == "quick")
-                    or (self.parse_type == "rapid") or prior_string[-2] == " "):
-                skip_chars.remove(" ")
-
-        return skip_chars
-
     def remove_irrelevant_traits(self, result_json):
         """Keeps only desired info on the artists & removes duplicates"""
         artists = {
@@ -375,10 +301,10 @@ class ArtistScraper(object):
         """Adds new artists to the all_artists dictionary after cleaning"""
         return self.all_artists.update(self.remove_irrelevant_traits(result_json))
 
-    def initialize_new_user(self, scrape_num):
+    def initialize_new_user(self):
         """Makes connection token for current number user using .env cookies"""
-        self._user = UserClient(sp_dc=self.SP_DCS[scrape_num % self.num_users],
-                                sp_key=self.SP_KEYS[scrape_num % self.num_users])
+        self._user = UserClient(sp_dc=self.SP_DCS[self.scrape_num % self.num_users],
+                                sp_key=self.SP_KEYS[self.scrape_num % self.num_users])
 
     def store_all_genres(self):
         """Gets all genres that exist on Spotify from Everynoise
@@ -412,7 +338,8 @@ class ArtistScraper(object):
 
         with open(self.artists_file, 'w') as out_file:
             json.dump(dict(full_artists), out_file)
-            # ujson.dump(dict(full_artists), out_file, ensure_ascii=False, indent=4)
+
+        return len(full_artists)
 
     def _setup_folders(self, parse_type):
         """Creates files/folders for storing results if don't already exist"""
@@ -600,7 +527,7 @@ class UserClient(object):
 
 
 # %%
-def switch_server_and_user(scraper, lock, scrape_num):
+def switch_server_and_user(scraper):
     """
     Switches to a new server and user whenever the old server has been blocked
 
@@ -617,56 +544,49 @@ def switch_server_and_user(scraper, lock, scrape_num):
     grabbing the lock while a process is writing to file
     """
     try:
-        time.sleep(8)
-        if lock.acquire(blocking=False):
-            print("Main lock acquired")
-            try:
-                os.system("'/mnt/c/Program Files/NordVPN/nordvpn.exe' -c")
-                fails = 0
-                while not check_connection():
-                    time.sleep(1)
-                    fails += 1
-                    if fails > 12:
-                        os.system("'/mnt/c/Program Files/NordVPN/nordvpn.exe' -c")
-                        fails = 0
-                print("New VPN connection established")
-                scrape_num.value += 1
-                scraper.initialize_new_user(scrape_num.value)
-                print('Main lock released')
-            except Exception as e:
-                print("*** Primary sleeping failed:", e)
-            finally:
-                lock.release()
+        if multiprocessing.current_process().name == "ForkProcess-1":
+            print("Primary process is switching VPN & users")
+            os.system("'/mnt/c/Program Files/NordVPN/nordvpn.exe' -c")
+            fails = 0
+            while not check_connection():
+                time.sleep(1)
+                fails += 1
+                if fails > 12:
+                    os.system("'/mnt/c/Program Files/NordVPN/nordvpn.exe' -c")
+                    fails = 0
+            print("New VPN connection established")
+            scraper.scrape_num += 1
+            scraper.initialize_new_user()
+            print('Primary process connected as new user')
         else:
-            try:
-                while not check_connection():
-                    time.sleep(1)
-                scraper.initialize_new_user(scrape_num.value)
-                print("Secondary process has connnected")
-            except Exception as e:
-                print('*** Secondary locks failed', e)
+            time.sleep(5)
+            while not check_connection():
+                time.sleep(1)
+            scraper.scrape_num += 1
+            scraper.initialize_new_user()
+            print("Secondary process connnected as new user")
     except Exception as e:
-        print('*** Initial locking in switching servers failed:', e)
+        print('*** Failure switching server and/or user for process '
+                f'{multiprocessing.current_process().name}: e')
 
 
 def check_connection():
     try:
-        requests.get('http://www.google.com', timeout=5)
+        requests.get('http://www.google.com', timeout=1)
         return True
-    except requests.URLError as e:
+    except:
         return False
 
 
-async def wait_for_rate_limit(result):
+def wait_for_rate_limit(result):
     """Waits for the amount of time given by a Spotify rate limit"""
     wait_time = int(result.headers.get("Retry-After"))
     print(f"Rate limit exceeded. Please wait {wait_time} seconds.")
-    await asyncio.sleep(wait_time)
-    # time.sleep(wait_time)
+    time.sleep(wait_time)
 
 
 # %%
-async def start_async(scraper, lock, write_lock, scrape_num, full_artists):
+async def start_async(scraper):
     """
     Starts the async scraping process & writes out updated results
 
@@ -694,60 +614,35 @@ async def start_async(scraper, lock, write_lock, scrape_num, full_artists):
             scraper.all_artists = {}
 
         try:
-            if len(scraper.start_chars) > 1:
-                await scraper.get_query_results(scraper.start_chars,
-                                                    lock, scrape_num)
-            else:
-                with open(scraper.chars_file, 'r') as in_file:
-                    rel_strings = [combo.split(": ") for combo
-                                    in in_file.read().splitlines()
-                                    if combo.split(": ")[0][0]
-                                        == scraper.start_chars]
-                rel_strings.sort(key=lambda x: int(x[1]), reverse=True)
-                await scraper.get_query_with_genre_results(rel_strings,
-                    scraper.start_chars, lock, scrape_num)
-
+            await scraper.get_query_results(scraper.start_chars)
             print(f"Letters {scraper.start_chars} finished")
         except Exception as e:
-            print(f"\n***Failure at {scraper.start_chars}: {e}\n")
+            print(f"\n*** Failure processing {scraper.start_chars}: {e}\n")
             os._exit(e)
 
     try:
         with open(combo_file, 'w') as out_file:
             json.dump(dict(scraper.all_artists), out_file)
 
-        full_artists.update(scraper.all_artists)
-
-        # with nonblocking(write_lock) as locked:
-        if write_lock.acquire(blocking=False):
-            print("Writing full_artists for", scraper.start_chars)
-            with open("quick_results/full_artists.json", 'w') as out_file:
-                json.dump(dict(full_artists), out_file)
-            print("Finished writing full_artists for", scraper.start_chars)
-        else:
-            print("Skipping write for", {scraper.start_chars})
-
         with open(scraper.chars_file, "a") as out_file:
             out_file.write(f"{scraper.start_chars}: {len(scraper.all_artists)}\n")
 
         print(f"\nFinished dumping {scraper.start_chars} with cumulative " \
-                f"{len(scraper.all_artists)} unique artists resulting in " \
-                f"{len(full_artists)} artists total\n")
+                f"{len(scraper.all_artists)} unique artists")
     except Exception as e:
-        print(f"***Failure at writing results for {scraper.start_chars}: {e}")
+        print(f"\n*** Failure writing results for {scraper.start_chars}: {e}\n")
+        os._exit(e)
 
 
 # %%
 def start_batch(args):
     """Starts an async process for the given starting string & its process"""
-    # print(os.getpid())
-    chars, scraper, lock, write_lock, scrape_num, full_artists = args
+    chars, scraper = args
     scraper.start_chars = chars
-    try:
-        asyncio.run(start_async(scraper, lock, write_lock, scrape_num, full_artists))
-    except Exception as e:
-        print("Exception:", e)
-
+    # Debating below
+    # scraper.RELEVANT_AND_WORDS = [word for word in scraper.SECONDARY_AND_WORDS
+                                #   if word <= (chars + "z")]
+    asyncio.run(start_async(scraper))
 
 # %%
 if __name__ == "__main__":
@@ -772,56 +667,46 @@ if __name__ == "__main__":
         ("quick" [default], "rapid", or "long")
         update -- whether to search letters that have already been searched
         (False [default] or True)
-        scrape_num -- which user cookies to use (0 [default] to 17)
+        scrape_num -- which user cookies to use (0 [default] to num_users)
         num_users -- number of users in environment variables (default=3)
         workers -- how many cpu cores to use (default=cpu_count()-1)
-
+        create_artists_file -- whether to create a full artists list prior to
+        running the program (default=True)
     Example run:
         python3 scrape_artists.py quick False 1 3 15
     """
-    manager = multiprocessing.Manager()
-    lock = manager.Lock()
-    write_lock = manager.Lock()
-
     parse_type = "quick" if len(sys.argv) > 1 and (sys.argv[1] == "quick" \
                     or sys.argv[1] == "short") else "long"
     update = True if len(sys.argv) > 2 and sys.argv[2] == "True" else False
-    scrape_num = manager.Value(ctypes.c_int, int(sys.argv[3])) \
-                    if len(sys.argv) > 3 and sys.argv[3].isdigit() \
-                    else manager.Value(ctypes.c_int, 0)
+    scrape_num = int(sys.argv[3]) \
+                    if len(sys.argv) > 3 and sys.argv[3].isdigit() else 0
     num_users = int(sys.argv[4]) \
                 if len(sys.argv) > 4 and sys.argv[4].isdigit() else int(3)
     if len(sys.argv) > 5 and sys.argv[5].isdigit():
-        scraper = ArtistScraper(parse_type, update, scrape_num.value,
+        scraper = ArtistScraper(parse_type, update, scrape_num,
                                 num_users, int(sys.argv[5]))
     else:
-        scraper = ArtistScraper(parse_type, update, scrape_num.value, num_users)
-
-    scraper.restore_full_artists_file()
-
-    with open(scraper.artists_file, "r") as in_file:
-        full_artists = manager.dict(json.load(in_file))
+        scraper = ArtistScraper(parse_type, update, scrape_num, num_users)
 
     with open(scraper.chars_file, "r") as in_file:
         finished = [combo.split(": ")[0] for combo in in_file.read().splitlines()]
-    batches = [["".join(combo), scraper, lock, write_lock,
-                                scrape_num, full_artists]
+
+    batches = [["".join(combo), scraper]
                 for combo
                 in itertools.product(scraper.VALID_START_CHARS,
                                         scraper.VALID_CHARS)
-                if (scraper.parse_type == "long" or len(combo) == 2)
-                and (scraper.update == True or "".join(combo) not in finished)]
+                if scraper.update == True or "".join(combo) not in finished]
 
     print("\n")
     print(f"Running {scraper.parse_type} scrape w/ update={scraper.update} " \
-          f"& scrape_num={scrape_num.value} "
+          f"& self.scrape_num={scrape_num} "
           f"& self.workers={scraper.workers}")
-    print("Unique artists found so far:", len(full_artists))
+
+    if len(sys.argv) <= 6 or sys.argv[6] == True:
+        print("Unique artists found so far:",
+        scraper.restore_full_artists_file())
     print("\n")
 
     with ProcessPoolExecutor(max_workers=scraper.workers) as executor:
         for artists in executor.map(start_batch, batches):
             print("A processor's execution fininshed")
-
-    manager.shutdown()
-
