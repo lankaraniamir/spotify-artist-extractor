@@ -466,15 +466,7 @@ class UserClient(object):
 
     async def async_get(self, query_url, async_client):
         """Does a query as if we were a user on Spotify in a shared session"""
-        with requests.session() as session:
-            session.headers = self.__HEADERS
-            session.headers.update({
-                                    'Client-Token': self._client_token,
-                                    'Authorization': f'Bearer {self._access_token}'
-                                    })
-
-            response = await async_client.get(query_url, headers=session.headers)
-            return response
+        return await async_client.get(query_url, headers=self.__HEADERS)
 
     def initialize_tokens(self):
         """Begins a persistent session by getting access & client tokens"""
@@ -518,6 +510,11 @@ class UserClient(object):
             'https://clienttoken.spotify.com/v1/clienttoken',
             json=data, verify=self._verify_ssl).json()
             self._client_token = response_json['granted_token']['token']
+
+        self.__HEADERS.update({
+                                'Client-Token': self._client_token,
+                                'Authorization': f'Bearer {self._access_token}'
+                                })
 
 
 # %%
@@ -691,12 +688,9 @@ if __name__ == "__main__":
 
     batches = [["".join(combo), scraper]
                 for combo
-                # in itertools.product(scraper.VALID_START_CHARS,
-                                        # scraper.VALID_CHARS)
-                in itertools.product(list(string.ascii_lowercase),
-                                        list(string.ascii_lowercase))
+                in itertools.product(scraper.VALID_START_CHARS,
+                                        scraper.VALID_CHARS)
                 if scraper.update == True or "".join(combo) not in finished
-                # remove 1-char and words from the batches
                 and combo != "y " and combo != "e "
               ]
 
@@ -704,7 +698,6 @@ if __name__ == "__main__":
     print(f"Running {scraper.parse_type} scrape w/ update={scraper.update} " \
           f"& self.scrape_num={scrape_num} "
           f"& self.workers={scraper.workers}")
-
     if len(sys.argv) <= 6 or sys.argv[6] == True:
         print("Unique artists found so far:",
         scraper.restore_full_artists_file())
