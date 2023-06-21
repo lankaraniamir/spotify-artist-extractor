@@ -44,7 +44,7 @@ class ArtistScraper(object):
     """
 
     def __init__(self, parse_type="short", update=False, scrape_num=0,
-                 num_users=3, workers=multiprocessing.cpu_count()-1):
+                 num_users=3, workers=multiprocessing.cpu_count()):
         """Initializes objects shared across threads and processes for scraping
 
         Args:
@@ -55,8 +55,8 @@ class ArtistScraper(object):
             update -- whether to search letters that have already been searched
             (default=false)
             self.scrape_num -- which number sp cookies to start with (default=0)
-            num_users -- number of users' cookies in .env
-            workers -- how many cpu cores to use
+            num_users -- number of users' cookies in .env (default=3)
+            workers -- how many cpu cores to use (default=cpu_count())
         """
         self.parse_type = parse_type
         self.update = update
@@ -70,13 +70,17 @@ class ArtistScraper(object):
         self.VALID_CHARS = list(string.ascii_lowercase + string.digits + "_. ")
         self.VALID_START_CHARS = self.VALID_CHARS[:-2]
         self.ALPHANUMERICALS = self.VALID_CHARS[:-3]
-        self.PUNCTUATION = self.VALID_CHARS[-3:]
-        # self.COMMON_LETTERS = list('etaoinshrdlcumwfgypbvkjxqz _.')
-        self.MAIN_AND = "and"
+        # self.PUNCTUATION = self.VALID_CHARS[-3:]
+        # self.MAIN_AND = "and"
         self.SECONDARY_AND_WORDS = ["e", "en","et", "ja", "nd", "und", "y"]
         self.RELEVANT_AND_WORDS = self.SECONDARY_AND_WORDS
-        # self.TWO_STRING_ANDS = ["et", "en", "ja", "nd"]
-        # self.THREE_STRING_ANDS = ["and", "und"]
+
+        if self.parse_type == "quick":
+            self.MAX_WORDS = 4
+        elif self.parse_type == "long":
+            self.MAX_WORDS = 7
+        elif self.parse_type == "rapid":
+            self.MAX_WORDS = 2
         self.MAX_URL_LENGTH = 307
 
         self._setup_folders(parse_type)
@@ -116,7 +120,6 @@ class ArtistScraper(object):
 
             if pure_total > 0:
                 await self.process_all_pages(result_json)
-                # print(f'"{cur_string}": {pure_total}')
                 if len(cur_string) <= 3:
                     print(f'"{cur_string}": {pure_total}')
             if pure_total == 1000 and self.parse_type == "long":
@@ -126,7 +129,6 @@ class ArtistScraper(object):
 
         elif total > 0:
             await self.process_all_pages(result_json)
-            # print(f'{cur_string}: {total}')
             if len(cur_string) <= 3:
                 print(f'{cur_string}: {total}')
         return total
@@ -150,58 +152,50 @@ class ArtistScraper(object):
         words = prior_string.split(" ")
         cur_word = words[-1]
 
-
         if len(words) > 1:
             prev_word = words[-2]
             next_chars = [char for char in next_chars
                             if prev_word >= cur_word + char]
-            # Debating which of the two ifs below
-            # if prior_string[-1] == " ":
-            #     next_chars.remove(prev_word[0])
-            if prior_string[-1] == " ":
-                next_chars.remove(prev_word[0])
-                self.add_chars_to_query(prior_string + prev_word[0])
-            # Debating the if below
-            elif prior_string[-2] == " ":
-                next_chars.remove(prev_word[1])
-            # Debating how much duplication to allow
 
-            if (len(cur_word)
-                    and (
-                        (len(words) <= 3 and self.parse_type == "quick")
-                        or (len(words) <= 6 and self.parse_type == "long")
-                        or (self.parse_type == "rapid"))
-                    # Debating below
-                    # and cur_word not in self.RELEVANT_AND_WORDS
-                    ):
+            # Debating below if elif
+            if not cur_word:
+                next_chars.remove(prev_word[0])
+                if (len(words) <= 2 or prev_word[0] != words[-2][0]) \
+                        and len(prev_word) > 1 and len(words) < self.MAX_WORDS:
+                    await self.add_chars_to_query(prior_string + prev_word[0])
+            elif prior_string[-2] == " " and len(prev_word) > 1 \
+                    and cur_word[0] == prev_word[0]:
+                next_chars.remove(prev_word[1])
+
+            if cur_word and len(words) < self.MAX_WORDS \
+                    and cur_word not in self.RELEVANT_AND_WORDS:
                 await self.add_chars_to_query(prior_string + " ")
-                # Debating below
-                # if len(prev_word) > 1:
-                #     await self.get_query_results(prior_string + " " + cur_word)
+                # Debating below if
+                if len(cur_word) > 1:
+                    await self.get_query_results(prior_string + " " + cur_word)
 
         elif "." not in prior_string and "_" not in prior_string:
             await self.add_chars_to_query(prior_string + ".")
             await self.get_query_results(prior_string + "_")
             await self.add_chars_to_query(prior_string + " ")
             # Debating below
-            # await self.get_query_results(prior_string + " " + prior_string)
+            await self.get_query_results(prior_string + " " + prior_string)
         elif (prior_string[-1] == "."):
             next_chars = filter(lambda i: i not in string.digits, next_chars)
 
         next_totals = {}
         for char in next_chars:
-            next_totals[char] = await self.get_query_results(
-                                        prior_string + char)
             # Debating below
-            # if cur_word + char in self.RELEVANT_AND_WORDS:
-            #     await self.add_chars_to_query(prior_string + char)
-            # else:
-            #     next_totals[char] = await self.get_query_results(
-            #                             prior_string + char)
+            if cur_word + char not in self.RELEVANT_AND_WORDS:
+                next_totals[char] = await self.get_query_results(
+                                        prior_string + char)
+            else:
+                next_totals[char] = await self.add_chars_to_query(prior_string + char)
 
         children_sorted_by_amount = sorted(next_totals.keys(),
                                            key=lambda x: next_totals[x],
                                            reverse=True)
+
 
         return children_sorted_by_amount, sum(next_totals.values())
 
@@ -614,7 +608,11 @@ async def start_async(scraper):
             scraper.all_artists = {}
 
         try:
-            await scraper.get_query_results(scraper.start_chars)
+            if scraper.start_chars not in scraper.RELEVANT_AND_WORDS:
+                await scraper.get_query_results(scraper.start_chars)
+            else:
+                # skip repeat querying and
+                await scraper.add_chars_to_query(scraper.start_chars)
             print(f"Letters {scraper.start_chars} finished")
         except Exception as e:
             print(f"\n*** Failure processing {scraper.start_chars}: {e}\n")
@@ -640,8 +638,8 @@ def start_batch(args):
     chars, scraper = args
     scraper.start_chars = chars
     # Debating below
-    # scraper.RELEVANT_AND_WORDS = [word for word in scraper.SECONDARY_AND_WORDS
-                                #   if word <= (chars + "z")]
+    scraper.RELEVANT_AND_WORDS = [word for word in scraper.SECONDARY_AND_WORDS
+                                  if word <= (chars + "z")]
     asyncio.run(start_async(scraper))
 
 # %%
@@ -669,7 +667,7 @@ if __name__ == "__main__":
         (False [default] or True)
         scrape_num -- which user cookies to use (0 [default] to num_users)
         num_users -- number of users in environment variables (default=3)
-        workers -- how many cpu cores to use (default=cpu_count()-1)
+        workers -- how many cpu cores to use (default=cpu_count())
         create_artists_file -- whether to create a full artists list prior to
         running the program (default=True)
     Example run:
@@ -693,9 +691,14 @@ if __name__ == "__main__":
 
     batches = [["".join(combo), scraper]
                 for combo
-                in itertools.product(scraper.VALID_START_CHARS,
-                                        scraper.VALID_CHARS)
-                if scraper.update == True or "".join(combo) not in finished]
+                # in itertools.product(scraper.VALID_START_CHARS,
+                                        # scraper.VALID_CHARS)
+                in itertools.product(list(string.ascii_lowercase),
+                                        list(string.ascii_lowercase))
+                if scraper.update == True or "".join(combo) not in finished
+                # remove 1-char and words from the batches
+                and combo != "y " and combo != "e "
+              ]
 
     print("\n")
     print(f"Running {scraper.parse_type} scrape w/ update={scraper.update} " \
