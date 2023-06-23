@@ -1,5 +1,6 @@
 # Spotify Artist Extractor
 
+![Project Flowchart](https://github.com/lankaraniamir/spotify-artist-extractor/blob/main/docs/artist_extractor_flowchart.png)
 
 ## Approach
 
